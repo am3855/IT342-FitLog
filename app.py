@@ -4,9 +4,15 @@ from botocore.exceptions import ClientError
 import boto3
 import uuid
 import os
+import re
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'fitlog-dev-secret-key')
+
+# Session configuration for security
+app.config['SESSION_COOKIE_HTTPONLY'] = True
+app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
+app.config['PERMANENT_SESSION_LIFETIME'] = 3600  # 1 hour
 
 TABLE_NAME = 'fitlog-users'
 
@@ -21,6 +27,21 @@ def get_dynamodb():
 
 def get_table():
     return get_dynamodb().Table(TABLE_NAME)
+
+
+def validate_name(name):
+    """Validate name input - allow only letters, spaces, hyphens, apostrophes"""
+    if not name or len(name) > 50:
+        return False
+    return bool(re.match(r"^[a-zA-Z\s\-']+$", name))
+
+
+def validate_email(email):
+    """Basic email validation"""
+    if not email or len(email) > 254:
+        return False
+    # Simple regex for email validation
+    return bool(re.match(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', email))
 
 
 def init_db():
@@ -57,6 +78,13 @@ def register():
 
     if not first_name or not last_name or not email or not password:
         return jsonify({'error': 'All fields are required.'}), 400
+    
+    if not validate_name(first_name) or not validate_name(last_name):
+        return jsonify({'error': 'Names can only contain letters, spaces, hyphens, and apostrophes.'}), 400
+    
+    if not validate_email(email):
+        return jsonify({'error': 'Please enter a valid email address.'}), 400
+    
     if len(password) < 8:
         return jsonify({'error': 'Password must be at least 8 characters.'}), 400
 
@@ -96,6 +124,9 @@ def login():
 
     if not email or not password:
         return jsonify({'error': 'Please enter your email and password.'}), 400
+    
+    if not validate_email(email):
+        return jsonify({'error': 'Please enter a valid email address.'}), 400
 
     table = get_table()
     response = table.get_item(Key={'email': email})
@@ -121,18 +152,12 @@ def logout():
     return jsonify({'success': True})
 
 
-@app.route('/api/me', methods=['GET'])
-def me():
-    if 'email' not in session:
-        return jsonify({'logged_in': False})
-    return jsonify({
-        'logged_in': True,
-        'user': {
-            'first_name': session['first_name'],
-            'last_name': session['last_name'],
-            'email': session['email']
-        }
-    })
+@app.after_request
+def add_security_headers(response):
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    response.headers['X-Frame-Options'] = 'DENY'
+    response.headers['X-XSS-Protection'] = '1; mode=block'
+    return response
 
 
 if __name__ == '__main__':
