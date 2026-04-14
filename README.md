@@ -11,13 +11,6 @@ AWS_DEFAULT_REGION=us-east-1
 SECRET_KEY=your_flask_secret_key
 ```
 
-Or use the AWS CLI:
-
-```
-aws configure
-```
-
-The DynamoDB table `fitlog-users` is created automatically on first run if it does not already exist.
 
 ## Directory Structure
 
@@ -40,13 +33,12 @@ IT342-FitLog/
 
 ## API Routes
 
-| Method | Route | Description |
-|--------|-------|-------------|
-| GET | `/` | Serves the application |
-| POST | `/api/register` | Creates a new user account |
-| POST | `/api/login` | Authenticates a user and starts a session |
-| POST | `/api/logout` | Clears the session |
-| GET | `/api/me` | Returns the current session user |
+
+| GET | `/` 
+| POST | `/api/register` 
+| POST | `/api/login` 
+| POST | `/api/logout` 
+| GET | `/api/me` 
 
 ---
 
@@ -64,9 +56,8 @@ IT342-FitLog/
 
 ---
 
-## Docker (Local Testing)
+## Docker 
 
-Requires Docker Desktop to be installed and running.
 
 ```
 docker-compose up --build
@@ -74,9 +65,6 @@ docker-compose up --build
 
 Open: `http://localhost:5000`
 
-- The Flask app and a local DynamoDB instance start together.
-- The `fitlog-users` table is created automatically on startup.
-- No AWS credentials are needed for local testing.
 - To stop: `docker-compose down`
 
 ---
