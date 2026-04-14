@@ -1,53 +1,92 @@
----Milestone 1---
+# FitLog
 
+## Setup
 
+AWS credentials must be configured before running. Set the following environment variables:
 
-FitLog — Project Proposal
-IT 342 — Cloud Infrastructure &amp; AWS Services
+```
+AWS_ACCESS_KEY_ID=your_access_key
+AWS_SECRET_ACCESS_KEY=your_secret_key
+AWS_DEFAULT_REGION=us-east-1
+SECRET_KEY=your_flask_secret_key
+```
 
-Project Overview
-FitLog is a cloud-native fitness tracking web app where users create accounts, log workouts, and view progress
-over time. The project demonstrates AWS cloud infrastructure skills — compute, networking, IAM, storage,
-automation, and monitoring — in a real-world deployment.
-Core Application Features
-• User registration and login with secure password handling
-• Workout logging — exercise name, sets, reps, weight, and date
-• Workout history — browse and filter past sessions
-• Progress tracking — view performance changes over time
-• Admin interface for managing users and data
-IT 342 — AWS Deliverables
-Compute &amp; Hosting
-• EC2 instance (Amazon Linux 2023) behind an Application Load Balancer with Auto Scaling
-• Frontend deployed to S3 static hosting, served via CloudFront CDN with HTTPS
-Networking &amp; Security
-• Custom VPC with public and private subnets across two Availability Zones
-• ALB in public subnet; EC2 in private subnet; NAT Gateway for outbound access
-• Security Groups: port 443 open to internet on ALB only; EC2 accepts traffic from ALB only
-• VPC Flow Logs enabled for network traffic auditing
-IAM
-• IAM users per role: read-only dev, app service role, admin — all least-privilege
-• EC2 instance profile grants app access to S3 and RDS without stored credentials
-Database &amp; Storage
-• Amazon RDS (MySQL) in a private subnet with automated 7-day backup retention
-• S3 bucket for user uploads and nightly DB backup exports — encrypted, no public access
-Automation &amp; IaC
-• CloudFormation template provisions full stack (VPC, EC2, RDS, S3, ALB) from scratch
-• Lambda + EventBridge scheduled nightly: exports RDS snapshot to versioned S3 backup bucket
-• EC2 User Data script bootstraps dependencies and starts the app on instance launch
-Monitoring &amp; Logging
-• CloudWatch metrics, alarms (CPU &gt; 80%, unhealthy hosts), and structured application logs
-• CloudTrail enabled for full API audit trail across the account
-Version Control
-• Git + GitHub with main / dev / feature branch strategy; all merges documented with clear commit messages
-Tech Stack
-• Compute: EC2 (Amazon Linux 2023) + Auto Scaling Group
-• Load Balancing: Application Load Balancer (ALB)
-• Frontend: S3 static hosting + CloudFront
+Or use the AWS CLI:
 
-• Backend: Node.js / Express (or Python / Flask)
-• Database: Amazon RDS — MySQL (or PostgreSQL / Aurora)
-• Serverless: AWS Lambda + EventBridge (scheduled backups)
-• Networking: VPC, Security Groups, NAT Gateway
-• IAM: Users, roles, instance profiles, least-privilege policies
-• Monitoring: CloudWatch, CloudTrail
-• Version Control: Git + GitHub
+```
+aws configure
+```
+
+The DynamoDB table `fitlog-users` is created automatically on first run if it does not already exist.
+
+## Directory Structure
+
+```
+IT342-FitLog/
+├── app.py                  
+├── requirements.txt        
+├── README.md
+├── .gitignore
+├── static/
+│   ├── css/
+│   │   └── style.css       
+│   └── js/
+│       └── main.js         
+└── templates/
+    └── index.html           
+```
+
+---
+
+## API Routes
+
+| Method | Route | Description |
+|--------|-------|-------------|
+| GET | `/` | Serves the application |
+| POST | `/api/register` | Creates a new user account |
+| POST | `/api/login` | Authenticates a user and starts a session |
+| POST | `/api/logout` | Clears the session |
+| GET | `/api/me` | Returns the current session user |
+
+---
+
+## Tech Stack
+
+**Python / Flask** — serves the app, handles all routes and session management
+
+**AWS DynamoDB** — stores users in table `fitlog-users` (partition key: `email`), `PAY_PER_REQUEST` billing, auto-created on first run
+
+**boto3** — Python SDK for DynamoDB; uses IAM instance profile automatically on EC2
+
+**Werkzeug** — password hashing, included with Flask
+
+**HTML / CSS / JavaScript** — `index.html` renders all three views; `style.css` styles them; `main.js` handles view switching, form validation, and all API calls
+
+---
+
+## Docker (Local Testing)
+
+Requires Docker Desktop to be installed and running.
+
+```
+docker-compose up --build
+```
+
+Open: `http://localhost:5000`
+
+- The Flask app and a local DynamoDB instance start together.
+- The `fitlog-users` table is created automatically on startup.
+- No AWS credentials are needed for local testing.
+- To stop: `docker-compose down`
+
+---
+
+## Connecting to DynamoDB
+
+- Log in to the AWS Console and navigate to IAM, then create a user with the `AmazonDynamoDBFullAccess` policy attached.
+- Generate an access key for that IAM user and copy the `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` values.
+- Set `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and `AWS_DEFAULT_REGION` as environment variables on the machine running the app.
+- Confirm the region matches where you want the table created, as `app.py` defaults to `us-east-1` if `AWS_DEFAULT_REGION` is not set.
+- Run `python app.py` and the app will call `create_table` on startup, creating the `fitlog-users` table automatically if it does not exist.
+- To verify, open the AWS Console, go to DynamoDB, and confirm the `fitlog-users` table appears in your region.
+- When deployed on EC2, attach an IAM role with `AmazonDynamoDBFullAccess` to the instance instead of using access keys.
