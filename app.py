@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, session
+from flask import Flask, request, jsonify, session, render_template
 from werkzeug.security import generate_password_hash, check_password_hash
 from botocore.exceptions import ClientError
 import boto3
@@ -62,6 +62,10 @@ def init_db():
         if e.response['Error']['Code'] != 'ResourceInUseException':
             raise
 
+
+@app.route('/')
+def index():
+    return render_template('index.html')
 
 
 @app.route('/api/register', methods=['POST'])
