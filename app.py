@@ -146,6 +146,17 @@ def login():
     }})
 
 
+@app.route('/api/me')
+def me():
+    if 'email' in session:
+        return jsonify({'logged_in': True, 'user': {
+            'first_name': session['first_name'],
+            'last_name': session['last_name'],
+            'email': session['email']
+        }})
+    return jsonify({'logged_in': False})
+
+
 @app.route('/api/logout', methods=['POST'])
 def logout():
     session.clear()
