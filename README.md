@@ -55,7 +55,7 @@ docker-compose up --build
 
 Open: `http://localhost:5000`
 
-- To stop: `docker-compose down`
+To stop: `docker-compose down`
 
 
 
