@@ -83,10 +83,22 @@ def get_user_by_email(email):
             KeyConditionExpression=Key('email').eq(email)
         )
         items = r.get('Items', [])
-        return clean(items[0]) if items else None
-    except Exception as e:
-        logger.error(f'get_user_by_email: {e}')
+        if items:
+            logger.info(f'get_user_by_email: found via GSI for {email}')
+            return clean(items[0])
         return None
+    except Exception as e:
+        # GSI may not exist on this table yet — fall back to full scan
+        logger.warning(f'get_user_by_email GSI query failed ({e}), falling back to scan')
+        try:
+            r = users_table().scan(FilterExpression=Attr('email').eq(email))
+            items = r.get('Items', [])
+            if items:
+                logger.info(f'get_user_by_email: found via scan for {email}')
+            return clean(items[0]) if items else None
+        except Exception as e2:
+            logger.error(f'get_user_by_email scan also failed: {e2}')
+            return None
 
 
 def get_user_by_username(username):
@@ -98,8 +110,15 @@ def get_user_by_username(username):
         items = r.get('Items', [])
         return clean(items[0]) if items else None
     except Exception as e:
-        logger.error(f'get_user_by_username: {e}')
-        return None
+        # GSI may not exist on this table yet — fall back to full scan
+        logger.warning(f'get_user_by_username GSI query failed ({e}), falling back to scan')
+        try:
+            r = users_table().scan(FilterExpression=Attr('username').eq(username))
+            items = r.get('Items', [])
+            return clean(items[0]) if items else None
+        except Exception as e2:
+            logger.error(f'get_user_by_username scan also failed: {e2}')
+            return None
 
 
 def get_user_by_id(user_id):
@@ -228,28 +247,48 @@ def init_db():
         if e.response['Error']['Code'] != 'ResourceInUseException':
             raise
 
-    # Seed admin — use scan (not GSI query) to avoid GSI-still-building race condition
-    scan_result = users_table().scan(
-        FilterExpression=Attr('email').eq('admin@fitlog.com'),
-        Limit=1,
-    )
-    if not scan_result.get('Items'):
-        pw_hash = bcrypt.hashpw(b'Admin123!', bcrypt.gensalt()).decode()
-        users_table().put_item(Item={
-            'user_id': str(uuid.uuid4()),
-            'username': 'admin',
-            'email': 'admin@fitlog.com',
-            'password_hash': pw_hash,
-            'is_admin': True,
-            'created_at': datetime.utcnow().isoformat(),
-            '2fa_enabled': False,
-            'age': None,
-            'weight': None,
-            'height': None,
-            'gender': None,
-            'unit_preference': 'imperial',
-        })
-        logger.info('Admin account seeded')
+    # Seed admin — use scan without Limit so all items are checked.
+    # Limit=N on a DynamoDB scan limits items EVALUATED before filtering, not items matched.
+    # Using Limit=1 would only check 1 random item and incorrectly conclude admin doesn't exist.
+    try:
+        scan_result = users_table().scan(
+            FilterExpression=Attr('email').eq('admin@fitlog.com'),
+        )
+        if not scan_result.get('Items'):
+            pw_hash = bcrypt.hashpw(b'Admin123!', bcrypt.gensalt()).decode()
+            users_table().put_item(Item={
+                'user_id': str(uuid.uuid4()),
+                'username': 'admin',
+                'email': 'admin@fitlog.com',
+                'password_hash': pw_hash,
+                'is_admin': True,
+                'created_at': datetime.utcnow().isoformat(),
+                '2fa_enabled': False,
+                'age': None,
+                'weight': None,
+                'height': None,
+                'gender': None,
+                'unit_preference': 'imperial',
+            })
+            logger.info('STARTUP: Admin account created — admin@fitlog.com / Admin123!')
+        else:
+            admin = scan_result['Items'][0]
+            logger.info(f'STARTUP: Admin account exists — user_id={admin.get("user_id")}, email={admin.get("email")}')
+    except Exception as e:
+        logger.error(f'STARTUP: Admin seed check failed: {e}')
+
+
+# ── Global error handlers (always return JSON, never HTML) ────────────────────
+
+from werkzeug.exceptions import HTTPException
+
+
+@app.errorhandler(Exception)
+def handle_exception(e):
+    if isinstance(e, HTTPException):
+        return jsonify({'error': e.description}), e.code
+    logger.exception(f'Unhandled exception: {e}')
+    return jsonify({'error': 'Internal server error. Check server logs.'}), 500
 
 
 # ── Routes: core ─────────────────────────────────────────────────────────────
@@ -322,9 +361,14 @@ def login():
     if not email or not password:
         return jsonify({'error': 'Please enter your email and password.'}), 400
 
+    logger.info(f'LOGIN: attempt for email={email}')
     user = get_user_by_email(email)
-    if not user or not bcrypt.checkpw(password.encode(), user['password_hash'].encode()):
-        logger.warning(json.dumps({'event': 'login_failed', 'email': email}))
+    if not user:
+        logger.warning(f'LOGIN: no user found for email={email}')
+        return jsonify({'error': 'Invalid email or password.'}), 401
+    logger.info(f'LOGIN: user found user_id={user.get("user_id")} is_admin={user.get("is_admin")}')
+    if not bcrypt.checkpw(password.encode(), user['password_hash'].encode()):
+        logger.warning(f'LOGIN: wrong password for email={email}')
         return jsonify({'error': 'Invalid email or password.'}), 401
 
     if user.get('2fa_enabled'):
@@ -389,24 +433,28 @@ def verify_2fa():
 @app.route('/api/2fa/enroll', methods=['POST'])
 @require_auth
 def enroll_2fa():
+    logger.info(f'2FA_ENROLL: enabling 2FA for user_id={session["user_id"]}')
     users_table().update_item(
         Key={'user_id': session['user_id']},
         UpdateExpression='SET #en = :t',
         ExpressionAttributeNames={'#en': '2fa_enabled'},
         ExpressionAttributeValues={':t': True},
     )
+    logger.info(f'2FA_ENROLL: success for user_id={session["user_id"]}')
     return jsonify({'success': True})
 
 
 @app.route('/api/2fa/disable', methods=['POST'])
 @require_auth
 def disable_2fa():
+    logger.info(f'2FA_DISABLE: disabling 2FA for user_id={session["user_id"]}')
     users_table().update_item(
         Key={'user_id': session['user_id']},
         UpdateExpression='SET #en = :f',
         ExpressionAttributeNames={'#en': '2fa_enabled'},
         ExpressionAttributeValues={':f': False},
     )
+    logger.info(f'2FA_DISABLE: success for user_id={session["user_id"]}')
     return jsonify({'success': True})
 
 
@@ -482,6 +530,7 @@ def update_email():
 @require_auth
 def update_metrics():
     data = request.get_json() or {}
+    logger.info(f'UPDATE_METRICS: user_id={session["user_id"]} payload_keys={list(data.keys())}')
     parts, vals = [], {}
     if 'age' in data:
         parts.append('age = :age')
@@ -502,11 +551,13 @@ def update_metrics():
         vals[':unit_preference'] = data['unit_preference']
     if not parts:
         return jsonify({'error': 'Nothing to update.'}), 400
+    logger.info(f'UPDATE_METRICS: updating fields={parts}')
     users_table().update_item(
         Key={'user_id': session['user_id']},
         UpdateExpression='SET ' + ', '.join(parts),
         ExpressionAttributeValues=vals,
     )
+    logger.info(f'UPDATE_METRICS: success for user_id={session["user_id"]}')
     return jsonify({'success': True})
 
 

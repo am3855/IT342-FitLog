@@ -7,7 +7,8 @@ let allWorkouts = [];
 let charts = {};
 
 function apiFetch(url, options) {
-  return fetch((window.API_BASE || '') + url, options);
+  const opts = Object.assign({ credentials: 'include' }, options || {});
+  return fetch((window.API_BASE || '') + url, opts);
 }
 
 // ── View / Panel helpers ──────────────────────
@@ -707,26 +708,34 @@ async function saveMetrics() {
   if (weight) payload.weight = parseFloat(weight);
   if (height) payload.height = parseFloat(height);
   if (gender) payload.gender = gender;
-  const res  = await apiFetch('/api/user/metrics', { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
-  const data = await res.json();
-  if (!res.ok) { showMsg('metrics-error', data.error, true); return; }
-  Object.assign(currentUser, payload);
-  showMsg('metrics-success', 'Body metrics saved!', false);
+  try {
+    const res  = await apiFetch('/api/user/metrics', { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+    const data = await res.json();
+    if (!res.ok) { showMsg('metrics-error', data.error || 'Save failed. Are you logged in?', true); return; }
+    Object.assign(currentUser, payload);
+    showMsg('metrics-success', 'Body metrics saved!', false);
+  } catch(e) {
+    showMsg('metrics-error', 'Request failed: ' + e.message, true);
+  }
 }
 
 async function toggle2FA() {
   hideMsg('twofa-settings-success'); hideMsg('twofa-settings-error');
   const is2FA  = currentUser?.['2fa_enabled'];
   const url    = is2FA ? '/api/2fa/disable' : '/api/2fa/enroll';
-  const res    = await apiFetch(url, { method: 'POST' });
-  const data   = await res.json();
-  if (!res.ok) { showMsg('twofa-settings-error', data.error || 'Failed.', true); return; }
-  currentUser['2fa_enabled'] = !is2FA;
-  const newState = !is2FA;
-  document.getElementById('twofa-status-label').textContent = newState ? 'Enabled' : 'Disabled';
-  document.getElementById('twofa-status-label').style.color = newState ? 'var(--green)' : 'var(--muted)';
-  document.getElementById('twofa-toggle-btn').textContent   = newState ? 'Disable 2FA' : 'Enable 2FA';
-  showMsg('twofa-settings-success', newState ? '2FA enabled!' : '2FA disabled.', false);
+  try {
+    const res    = await apiFetch(url, { method: 'POST' });
+    const data   = await res.json();
+    if (!res.ok) { showMsg('twofa-settings-error', data.error || 'Failed. Are you logged in?', true); return; }
+    currentUser['2fa_enabled'] = !is2FA;
+    const newState = !is2FA;
+    document.getElementById('twofa-status-label').textContent = newState ? 'Enabled' : 'Disabled';
+    document.getElementById('twofa-status-label').style.color = newState ? 'var(--green)' : 'var(--muted)';
+    document.getElementById('twofa-toggle-btn').textContent   = newState ? 'Disable 2FA' : 'Enable 2FA';
+    showMsg('twofa-settings-success', newState ? '2FA enabled!' : '2FA disabled.', false);
+  } catch(e) {
+    showMsg('twofa-settings-error', 'Request failed: ' + e.message, true);
+  }
 }
 
 // ── Admin ─────────────────────────────────────
