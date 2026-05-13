@@ -510,17 +510,23 @@ def logout():
 def update_username():
     data = request.get_json() or {}
     new_u = data.get('username', '').strip()
+    uid = str(session['user_id'])
+    print(f'DEBUG UPDATE_USERNAME session: {dict(session)}')
+    print(f'DEBUG UPDATE_USERNAME user_id type={type(uid).__name__} value={uid!r}')
+    logger.info(f'UPDATE_USERNAME: user_id={uid}')
     if not valid_username(new_u):
         return jsonify({'error': 'Username must be 3-30 chars (letters, numbers, _ . -)'}), 400
     existing = get_user_by_username(new_u)
     if existing and existing['user_id'] != session['user_id']:
         return jsonify({'error': 'That username is already taken.'}), 409
     users_table().update_item(
-        Key={'user_id': str(session['user_id'])},
-        UpdateExpression='SET username = :u',
+        Key={'user_id': uid},
+        UpdateExpression='SET #un = :u',
+        ExpressionAttributeNames={'#un': 'username'},
         ExpressionAttributeValues={':u': new_u},
     )
     session['username'] = new_u
+    logger.info(f'UPDATE_USERNAME: success for user_id={uid}')
     return jsonify({'success': True})
 
 
@@ -529,16 +535,22 @@ def update_username():
 def update_email():
     data = request.get_json() or {}
     new_e = data.get('email', '').strip().lower()
+    uid = str(session['user_id'])
+    print(f'DEBUG UPDATE_EMAIL session: {dict(session)}')
+    print(f'DEBUG UPDATE_EMAIL user_id type={type(uid).__name__} value={uid!r}')
+    logger.info(f'UPDATE_EMAIL: user_id={uid}')
     if not valid_email(new_e):
         return jsonify({'error': 'Please enter a valid email address.'}), 400
     existing = get_user_by_email(new_e)
     if existing and existing['user_id'] != session['user_id']:
         return jsonify({'error': 'That email is already in use.'}), 409
     users_table().update_item(
-        Key={'user_id': str(session['user_id'])},
-        UpdateExpression='SET email = :e',
+        Key={'user_id': uid},
+        UpdateExpression='SET #em = :e',
+        ExpressionAttributeNames={'#em': 'email'},
         ExpressionAttributeValues={':e': new_e},
     )
+    logger.info(f'UPDATE_EMAIL: success for user_id={uid}')
     return jsonify({'success': True})
 
 
@@ -877,6 +889,44 @@ def admin_update_workout(workout_id):
 def admin_delete_workout(workout_id):
     workouts_table().delete_item(Key={'workout_id': workout_id})
     return jsonify({'success': True})
+
+
+# ── Routes: diagnostics (remove after debugging) ─────────────────────────────
+
+@app.route('/api/debug/schema')
+@require_admin
+def debug_schema():
+    """Return real DynamoDB table schema — requires admin login."""
+    try:
+        client = get_dynamodb().meta.client
+        result = {}
+        for tname in ('fitlog-users', 'fitlog-workouts'):
+            desc = client.describe_table(TableName=tname)['Table']
+            result[tname] = {
+                'key_schema': desc['KeySchema'],
+                'attribute_definitions': desc['AttributeDefinitions'],
+                'gsis': [
+                    {'name': g['IndexName'], 'keys': g['KeySchema']}
+                    for g in desc.get('GlobalSecondaryIndexes', [])
+                ],
+            }
+        return jsonify(result)
+    except Exception as e:
+        logger.error(f'debug_schema failed: {e}')
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/debug/session')
+@require_auth
+def debug_session():
+    """Return current session contents — requires login."""
+    uid = session.get('user_id')
+    return jsonify({
+        'user_id': uid,
+        'user_id_type': type(uid).__name__,
+        'user_id_repr': repr(uid),
+        'session_keys': list(session.keys()),
+    })
 
 
 # ── Security headers ──────────────────────────────────────────────────────────
