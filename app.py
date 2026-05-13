@@ -1,7 +1,8 @@
 from flask import Flask, request, jsonify, session, render_template
+from flask_cors import CORS
 import bcrypt
 import boto3
-from boto3.dynamodb.conditions import Key
+from boto3.dynamodb.conditions import Key, Attr
 from botocore.exceptions import ClientError
 import uuid
 import os
@@ -25,6 +26,9 @@ app.secret_key = os.environ.get('SECRET_KEY', 'fitlog-dev-secret-change-in-prod'
 app.config['SESSION_COOKIE_HTTPONLY'] = True
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 app.config['PERMANENT_SESSION_LIFETIME'] = 3600
+
+_cors_origins = os.environ.get('CORS_ORIGINS', '*')
+CORS(app, origins=_cors_origins, supports_credentials=True)
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 logger = logging.getLogger(__name__)
@@ -224,8 +228,12 @@ def init_db():
         if e.response['Error']['Code'] != 'ResourceInUseException':
             raise
 
-    # Seed admin
-    if not get_user_by_email('admin@fitlog.com'):
+    # Seed admin — use scan (not GSI query) to avoid GSI-still-building race condition
+    scan_result = users_table().scan(
+        FilterExpression=Attr('email').eq('admin@fitlog.com'),
+        Limit=1,
+    )
+    if not scan_result.get('Items'):
         pw_hash = bcrypt.hashpw(b'Admin123!', bcrypt.gensalt()).decode()
         users_table().put_item(Item={
             'user_id': str(uuid.uuid4()),
@@ -248,7 +256,8 @@ def init_db():
 
 @app.route('/')
 def index():
-    return render_template('index.html')
+    backend_url = os.environ.get('BACKEND_URL', '')
+    return render_template('index.html', backend_url=backend_url)
 
 
 @app.route('/api/health')

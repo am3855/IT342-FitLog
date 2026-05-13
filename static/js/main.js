@@ -6,6 +6,10 @@ let currentUser = null;
 let allWorkouts = [];
 let charts = {};
 
+function apiFetch(url, options) {
+  return fetch((window.API_BASE || '') + url, options);
+}
+
 // ── View / Panel helpers ──────────────────────
 
 function showView(name) {
@@ -62,7 +66,7 @@ function destroyChart(key) {
 // ── Auth ─────────────────────────────────────
 
 async function checkAuth() {
-  const res = await fetch('/api/me');
+  const res = await apiFetch('/api/me');
   const data = await res.json();
   if (data.logged_in) {
     await enterApp(data.user);
@@ -87,7 +91,7 @@ async function handleLogin() {
   const password = document.getElementById('login-password').value;
   if (!email || !password) { showMsg('login-error', 'Please enter your email and password.', true); return; }
 
-  const res  = await fetch('/api/login', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({email, password}) });
+  const res  = await apiFetch('/api/login', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({email, password}) });
   const data = await res.json();
 
   if (data.requires_2fa) { showView('2fa'); return; }
@@ -108,7 +112,7 @@ async function handleRegister() {
   if (password.length < 8) { showMsg('register-error', 'Password must be at least 8 characters.', true); return; }
   if (password !== confirm_password) { showMsg('register-error', 'Passwords do not match.', true); return; }
 
-  const res  = await fetch('/api/register', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({username, email, password, confirm_password}) });
+  const res  = await apiFetch('/api/register', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({username, email, password, confirm_password}) });
   const data = await res.json();
   if (!res.ok) { showMsg('register-error', data.error, true); return; }
   await enterApp(data.user);
@@ -119,14 +123,14 @@ async function handle2FA() {
   const code = document.getElementById('twofa-code').value.trim();
   if (!code) { showMsg('twofa-error', 'Please enter the verification code.', true); return; }
 
-  const res  = await fetch('/api/2fa/verify', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({code}) });
+  const res  = await apiFetch('/api/2fa/verify', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({code}) });
   const data = await res.json();
   if (!res.ok) { showMsg('twofa-error', data.error, true); return; }
   await enterApp(data.user);
 }
 
 async function handleLogout() {
-  await fetch('/api/logout', { method: 'POST' });
+  await apiFetch('/api/logout', { method: 'POST' });
   currentUser = null;
   allWorkouts = [];
   Object.keys(charts).forEach(k => destroyChart(k));
@@ -153,7 +157,7 @@ function checkStrength(val) {
 // ── Workouts ──────────────────────────────────
 
 async function loadWorkouts() {
-  const res  = await fetch('/api/workouts');
+  const res  = await apiFetch('/api/workouts');
   const data = await res.json();
   allWorkouts = data.workouts || [];
   updateStatsBar(allWorkouts);
@@ -243,7 +247,7 @@ async function submitWorkout() {
   if (!sets || !reps)  { showMsg('log-error', 'Sets and reps are required.', true); return; }
   if (!date)           { showMsg('log-error', 'Please select a date.', true); return; }
 
-  const res  = await fetch('/api/workouts', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({exercise_name, sets, reps, weight, duration, date}) });
+  const res  = await apiFetch('/api/workouts', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({exercise_name, sets, reps, weight, duration, date}) });
   const data = await res.json();
   if (!res.ok) { showMsg('log-error', data.error, true); return; }
 
@@ -262,7 +266,7 @@ async function submitWorkout() {
 
 async function deleteWorkout(id) {
   if (!confirm('Delete this workout?')) return;
-  const res = await fetch('/api/workouts/' + id, { method: 'DELETE' });
+  const res = await apiFetch('/api/workouts/' + id, { method: 'DELETE' });
   if (!res.ok) { showMsg('history-error', 'Failed to delete workout.', true); return; }
   allWorkouts = allWorkouts.filter(w => w.workout_id !== id);
   updateStatsBar(allWorkouts);
@@ -306,7 +310,7 @@ async function saveEditModal() {
   if (!payload.exercise_name || !payload.sets || !payload.reps) {
     showMsg('edit-modal-error', 'Exercise, sets, and reps are required.', true); return;
   }
-  const res = await fetch('/api/workouts/' + id, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+  const res = await apiFetch('/api/workouts/' + id, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
   if (!res.ok) { const d = await res.json(); showMsg('edit-modal-error', d.error, true); return; }
 
   const idx = allWorkouts.findIndex(w => w.workout_id === id);
@@ -329,7 +333,7 @@ const debouncedSearch = debounce(async (term) => {
   const dd = document.getElementById('exercise-dropdown');
   if (!term || term.length < 2) { dd.classList.add('hidden'); return; }
   try {
-    const res  = await fetch('/api/exercises/search?term=' + encodeURIComponent(term));
+    const res  = await apiFetch('/api/exercises/search?term=' + encodeURIComponent(term));
     const data = await res.json();
     const suggestions = (data.suggestions || []).slice(0, 10);
     if (!suggestions.length) { dd.classList.add('hidden'); return; }
@@ -356,7 +360,7 @@ async function loadMuscles() {
   const btnContainer = document.getElementById('muscle-buttons');
   if (!btnContainer || btnContainer.dataset.loaded) return;
   try {
-    const res  = await fetch('/api/muscles');
+    const res  = await apiFetch('/api/muscles');
     const data = await res.json();
     const muscles = data.results || [];
     btnContainer.innerHTML = muscles.map(m =>
@@ -372,7 +376,7 @@ async function loadByMuscle(muscleId, btn) {
   const container = document.getElementById('muscle-exercises');
   container.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:12px;">Loading...</div>';
   try {
-    const res  = await fetch('/api/exercises/by-muscle?muscle_id=' + muscleId);
+    const res  = await apiFetch('/api/exercises/by-muscle?muscle_id=' + muscleId);
     const data = await res.json();
     const exercises = (data.results || []).filter(e => e.translations?.length || e.name);
     if (!exercises.length) { container.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:12px;">No exercises found.</div>'; return; }
@@ -615,7 +619,7 @@ async function getAIRecommendations() {
   document.getElementById('ai-get-btn').disabled = true;
 
   try {
-    const res  = await fetch('/api/ai/recommendations', { method: 'POST', headers: {'Content-Type':'application/json'} });
+    const res  = await apiFetch('/api/ai/recommendations', { method: 'POST', headers: {'Content-Type':'application/json'} });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Failed to get recommendations.');
     document.getElementById('ai-result-text').textContent = data.recommendations;
@@ -635,7 +639,7 @@ async function getAIRecommendations() {
 // ── Settings ──────────────────────────────────
 
 async function loadSettings() {
-  const res  = await fetch('/api/me');
+  const res  = await apiFetch('/api/me');
   const data = await res.json();
   if (!data.logged_in) return;
   currentUser = data.user;
@@ -668,7 +672,7 @@ async function saveUsername() {
   hideMsg('username-success'); hideMsg('username-error');
   const username = document.getElementById('settings-new-username').value.trim();
   if (!username) { showMsg('username-error', 'Please enter a username.', true); return; }
-  const res  = await fetch('/api/user/username', { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({username}) });
+  const res  = await apiFetch('/api/user/username', { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({username}) });
   const data = await res.json();
   if (!res.ok) { showMsg('username-error', data.error, true); return; }
   currentUser.username = username;
@@ -682,7 +686,7 @@ async function saveEmail() {
   hideMsg('email-success'); hideMsg('email-error');
   const email = document.getElementById('settings-new-email').value.trim();
   if (!email) { showMsg('email-error', 'Please enter an email.', true); return; }
-  const res  = await fetch('/api/user/email', { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({email}) });
+  const res  = await apiFetch('/api/user/email', { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({email}) });
   const data = await res.json();
   if (!res.ok) { showMsg('email-error', data.error, true); return; }
   currentUser.email = email;
@@ -703,7 +707,7 @@ async function saveMetrics() {
   if (weight) payload.weight = parseFloat(weight);
   if (height) payload.height = parseFloat(height);
   if (gender) payload.gender = gender;
-  const res  = await fetch('/api/user/metrics', { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+  const res  = await apiFetch('/api/user/metrics', { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
   const data = await res.json();
   if (!res.ok) { showMsg('metrics-error', data.error, true); return; }
   Object.assign(currentUser, payload);
@@ -714,7 +718,7 @@ async function toggle2FA() {
   hideMsg('twofa-settings-success'); hideMsg('twofa-settings-error');
   const is2FA  = currentUser?.['2fa_enabled'];
   const url    = is2FA ? '/api/2fa/disable' : '/api/2fa/enroll';
-  const res    = await fetch(url, { method: 'POST' });
+  const res    = await apiFetch(url, { method: 'POST' });
   const data   = await res.json();
   if (!res.ok) { showMsg('twofa-settings-error', data.error || 'Failed.', true); return; }
   currentUser['2fa_enabled'] = !is2FA;
@@ -730,7 +734,7 @@ async function toggle2FA() {
 async function loadAdmin() {
   document.getElementById('admin-loading').style.display = 'block';
   document.getElementById('admin-content').classList.add('hidden');
-  const res  = await fetch('/api/admin/users');
+  const res  = await apiFetch('/api/admin/users');
   if (!res.ok) { document.getElementById('admin-loading').textContent = 'Access denied.'; return; }
   const data = await res.json();
   document.getElementById('admin-loading').style.display = 'none';
@@ -784,7 +788,7 @@ function toggleAdminWorkouts(userId) {
 }
 
 async function adminToggle2FA(userId, current) {
-  const res  = await fetch(`/api/admin/users/${userId}/toggle-2fa`, { method: 'PUT' });
+  const res  = await apiFetch(`/api/admin/users/${userId}/toggle-2fa`, { method: 'PUT' });
   const data = await res.json();
   if (!res.ok) { alert(data.error); return; }
   loadAdmin();
@@ -793,14 +797,14 @@ async function adminToggle2FA(userId, current) {
 function adminEditEmail(userId, currentEmail) {
   const newEmail = prompt('New email for this user:', currentEmail);
   if (!newEmail || newEmail === currentEmail) return;
-  fetch(`/api/admin/users/${userId}/email`, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({email: newEmail}) })
+  apiFetch(`/api/admin/users/${userId}/email`, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({email: newEmail}) })
     .then(r => r.json()).then(d => { if (d.error) alert(d.error); else loadAdmin(); });
 }
 
 function adminEditUsername(userId, current) {
   const newU = prompt('New username:', current);
   if (!newU || newU === current) return;
-  fetch(`/api/admin/users/${userId}/username`, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({username: newU}) })
+  apiFetch(`/api/admin/users/${userId}/username`, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({username: newU}) })
     .then(r => r.json()).then(d => { if (d.error) alert(d.error); else loadAdmin(); });
 }
 
@@ -825,7 +829,7 @@ async function saveAdminMetrics() {
     gender:          document.getElementById('admin-metrics-gender').value,
     unit_preference: document.getElementById('admin-metrics-units').value,
   };
-  const res  = await fetch(`/api/admin/users/${userId}/metrics`, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+  const res  = await apiFetch(`/api/admin/users/${userId}/metrics`, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
   const data = await res.json();
   if (!res.ok) { showMsg('admin-metrics-error', data.error, true); return; }
   document.getElementById('admin-metrics-modal').classList.add('hidden');
@@ -863,7 +867,7 @@ function openAdminEditWorkout(id) {
 
 async function adminDeleteWorkout(workoutId) {
   if (!confirm('Delete this workout?')) return;
-  const res = await fetch('/api/admin/workouts/' + workoutId, { method: 'DELETE' });
+  const res = await apiFetch('/api/admin/workouts/' + workoutId, { method: 'DELETE' });
   if (!res.ok) { alert('Failed to delete workout.'); return; }
   loadAdmin();
 }
@@ -887,7 +891,7 @@ async function saveEditModal() {
     if (!payload.exercise_name || !payload.sets || !payload.reps) {
       showMsg('edit-modal-error', 'Exercise, sets, and reps are required.', true); return;
     }
-    const res = await fetch('/api/admin/workouts/' + id, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+    const res = await apiFetch('/api/admin/workouts/' + id, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
     if (!res.ok) { const d = await res.json(); showMsg('edit-modal-error', d.error, true); return; }
     closeEditModal();
     loadAdmin();
