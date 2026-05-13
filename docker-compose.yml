@@ -1,4 +1,5 @@
 services:
+
   dynamodb-local:
     image: amazon/dynamodb-local
     ports:
@@ -9,12 +10,15 @@ services:
     build: .
     ports:
       - "5000:5000"
+    env_file:
+      - .env
     environment:
+      # Fake credentials are fine for DynamoDB Local
       AWS_ACCESS_KEY_ID: test
       AWS_SECRET_ACCESS_KEY: test
+      AWS_REGION: us-east-1
       AWS_DEFAULT_REGION: us-east-1
       DYNAMODB_ENDPOINT_URL: http://dynamodb-local:8000
-      SECRET_KEY: dev-secret-key
     depends_on:
       - dynamodb-local
-# subject to change
+    restart: on-failure

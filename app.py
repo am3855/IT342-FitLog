@@ -32,6 +32,13 @@ logger = logging.getLogger(__name__)
 WGER_BASE = 'https://wger.de/api/v2'
 
 
+def to_dec(v):
+    """Convert a numeric value to Decimal for DynamoDB storage."""
+    if v is None:
+        return None
+    return Decimal(str(v))
+
+
 # ── DynamoDB helpers ──────────────────────────────────────────────────────────
 
 def get_dynamodb():
@@ -469,13 +476,13 @@ def update_metrics():
     parts, vals = [], {}
     if 'age' in data:
         parts.append('age = :age')
-        vals[':age'] = int(data['age']) if data['age'] is not None else None
+        vals[':age'] = to_dec(data['age'])
     if 'weight' in data:
         parts.append('weight = :weight')
-        vals[':weight'] = float(data['weight']) if data['weight'] is not None else None
+        vals[':weight'] = to_dec(data['weight'])
     if 'height' in data:
         parts.append('height = :height')
-        vals[':height'] = float(data['height']) if data['height'] is not None else None
+        vals[':height'] = to_dec(data['height'])
     if 'gender' in data:
         parts.append('gender = :gender')
         vals[':gender'] = data['gender']
@@ -508,10 +515,10 @@ def log_workout():
         'workout_id': workout_id,
         'user_id': session['user_id'],
         'exercise_name': str(data['exercise_name']),
-        'sets': int(data.get('sets', 0)),
-        'reps': int(data.get('reps', 0)),
-        'weight': float(data.get('weight', 0)),
-        'duration': int(data.get('duration', 0)),
+        'sets': to_dec(data.get('sets', 0)),
+        'reps': to_dec(data.get('reps', 0)),
+        'weight': to_dec(data.get('weight', 0)),
+        'duration': to_dec(data.get('duration', 0)),
         'date': str(data['date']),
         'created_at': datetime.utcnow().isoformat(),
     }
@@ -544,10 +551,8 @@ def update_workout(workout_id):
     for f in ('exercise_name', 'sets', 'reps', 'weight', 'duration', 'date'):
         if f in data:
             parts.append(f'{f} = :{f}')
-            if f in ('sets', 'reps', 'duration'):
-                vals[f':{f}'] = int(data[f])
-            elif f == 'weight':
-                vals[f':{f}'] = float(data[f])
+            if f in ('sets', 'reps', 'duration', 'weight'):
+                vals[f':{f}'] = to_dec(data[f])
             else:
                 vals[f':{f}'] = str(data[f])
     if not parts:
@@ -749,7 +754,7 @@ def admin_update_metrics(user_id):
     for f in ('age', 'weight', 'height', 'gender', 'unit_preference'):
         if f in data:
             parts.append(f'{f} = :{f}')
-            vals[f':{f}'] = data[f]
+            vals[f':{f}'] = to_dec(data[f]) if f in ('age', 'weight', 'height') else data[f]
     if not parts:
         return jsonify({'error': 'Nothing to update.'}), 400
     users_table().update_item(
@@ -768,10 +773,8 @@ def admin_update_workout(workout_id):
     for f in ('exercise_name', 'sets', 'reps', 'weight', 'duration', 'date'):
         if f in data:
             parts.append(f'{f} = :{f}')
-            if f in ('sets', 'reps', 'duration'):
-                vals[f':{f}'] = int(data[f])
-            elif f == 'weight':
-                vals[f':{f}'] = float(data[f])
+            if f in ('sets', 'reps', 'duration', 'weight'):
+                vals[f':{f}'] = to_dec(data[f])
             else:
                 vals[f':{f}'] = str(data[f])
     if not parts:
