@@ -1,2 +1,6 @@
 flask
+bcrypt
 boto3
+anthropic
+python-dotenv
+requests

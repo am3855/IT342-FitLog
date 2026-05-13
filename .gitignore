@@ -5,3 +5,6 @@ __pycache__/
 venv/
 .venv/
 instance/
+*.egg-info/
+dist/
+.pytest_cache/
