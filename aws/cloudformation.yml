@@ -1,0 +1,697 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: FitLog — full AWS infrastructure stack
+
+Parameters:
+  KeyName:
+    Type: String
+    Description: EC2 key pair name (optional)
+    Default: ''
+  GitRepo:
+    Type: String
+    Default: 'https://github.com/am3855/IT342-FitLog.git'
+  SecretKey:
+    Type: String
+    NoEcho: true
+    Default: 'change-this-secret-key'
+  AnthropicApiKey:
+    Type: String
+    NoEcho: true
+    Default: ''
+  MailEmail:
+    Type: String
+    Default: ''
+  MailPassword:
+    Type: String
+    NoEcho: true
+    Default: ''
+
+Resources:
+
+  # ══════════════════════════════════════════════
+  # VPC
+  # ══════════════════════════════════════════════
+
+  FitLogVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: fitlog-vpc
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: fitlog-igw
+
+  VPCGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref FitLogVPC
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref FitLogVPC
+      CidrBlock: 10.0.1.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags: [{Key: Name, Value: fitlog-public-1}]
+
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref FitLogVPC
+      CidrBlock: 10.0.2.0/24
+      AvailabilityZone: !Select [1, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags: [{Key: Name, Value: fitlog-public-2}]
+
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref FitLogVPC
+      CidrBlock: 10.0.3.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+      Tags: [{Key: Name, Value: fitlog-private-1}]
+
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref FitLogVPC
+      CidrBlock: 10.0.4.0/24
+      AvailabilityZone: !Select [1, !GetAZs '']
+      Tags: [{Key: Name, Value: fitlog-private-2}]
+
+  NATGatewayEIP:
+    Type: AWS::EC2::EIP
+    DependsOn: VPCGatewayAttachment
+    Properties:
+      Domain: vpc
+
+  NATGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NATGatewayEIP.AllocationId
+      SubnetId: !Ref PublicSubnet1
+      Tags: [{Key: Name, Value: fitlog-nat}]
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref FitLogVPC
+      Tags: [{Key: Name, Value: fitlog-public-rt}]
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: VPCGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnet1RTA:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet1
+      RouteTableId: !Ref PublicRouteTable
+
+  PublicSubnet2RTA:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet2
+      RouteTableId: !Ref PublicRouteTable
+
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref FitLogVPC
+      Tags: [{Key: Name, Value: fitlog-private-rt}]
+
+  PrivateRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NATGateway
+
+  PrivateSubnet1RTA:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet1
+      RouteTableId: !Ref PrivateRouteTable
+
+  PrivateSubnet2RTA:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet2
+      RouteTableId: !Ref PrivateRouteTable
+
+  # ══════════════════════════════════════════════
+  # Security Groups
+  # ══════════════════════════════════════════════
+
+  ALBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: ALB — allow HTTP/HTTPS from internet
+      VpcId: !Ref FitLogVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+      Tags: [{Key: Name, Value: fitlog-alb-sg}]
+
+  EC2SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: EC2 — allow port 5000 from ALB only
+      VpcId: !Ref FitLogVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5000
+          ToPort: 5000
+          SourceSecurityGroupId: !Ref ALBSecurityGroup
+      Tags: [{Key: Name, Value: fitlog-ec2-sg}]
+
+  # ══════════════════════════════════════════════
+  # DynamoDB
+  # ══════════════════════════════════════════════
+
+  UsersTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: fitlog-users
+      BillingMode: PAY_PER_REQUEST
+      KeySchema:
+        - AttributeName: user_id
+          KeyType: HASH
+      AttributeDefinitions:
+        - AttributeName: user_id
+          AttributeType: S
+        - AttributeName: email
+          AttributeType: S
+        - AttributeName: username
+          AttributeType: S
+      GlobalSecondaryIndexes:
+        - IndexName: email-index
+          KeySchema:
+            - AttributeName: email
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+        - IndexName: username-index
+          KeySchema:
+            - AttributeName: username
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+      Tags: [{Key: App, Value: fitlog}]
+
+  WorkoutsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: fitlog-workouts
+      BillingMode: PAY_PER_REQUEST
+      KeySchema:
+        - AttributeName: workout_id
+          KeyType: HASH
+      AttributeDefinitions:
+        - AttributeName: workout_id
+          AttributeType: S
+        - AttributeName: user_id
+          AttributeType: S
+      GlobalSecondaryIndexes:
+        - IndexName: user_id-index
+          KeySchema:
+            - AttributeName: user_id
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+      Tags: [{Key: App, Value: fitlog}]
+
+  # ══════════════════════════════════════════════
+  # S3
+  # ══════════════════════════════════════════════
+
+  AppBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags: [{Key: App, Value: fitlog}]
+
+  # ══════════════════════════════════════════════
+  # IAM — EC2 role
+  # ══════════════════════════════════════════════
+
+  EC2Role:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: fitlog-ec2-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: FitLogEC2Policy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:DeleteItem
+                  - dynamodb:Query
+                  - dynamodb:Scan
+                  - dynamodb:DescribeTable
+                  - dynamodb:CreateTable
+                Resource:
+                  - !GetAtt UsersTable.Arn
+                  - !Sub '${UsersTable.Arn}/index/*'
+                  - !GetAtt WorkoutsTable.Arn
+                  - !Sub '${WorkoutsTable.Arn}/index/*'
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                  - s3:ListBucket
+                Resource:
+                  - !GetAtt AppBucket.Arn
+                  - !Sub '${AppBucket.Arn}/*'
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - logs:DescribeLogStreams
+                Resource: 'arn:aws:logs:*:*:*'
+              - Effect: Allow
+                Action:
+                  - cloudwatch:PutMetricData
+                  - cloudwatch:GetMetricStatistics
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                  - ssm:GetParameters
+                  - ssm:GetParametersByPath
+                Resource: !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/fitlog/*'
+
+  EC2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: fitlog-ec2-profile
+      Roles:
+        - !Ref EC2Role
+
+  # IAM read-only dev user
+  DevUser:
+    Type: AWS::IAM::User
+    Properties:
+      UserName: fitlog-dev
+      Policies:
+        - PolicyName: FitLogDevReadOnly
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:Query
+                  - dynamodb:Scan
+                  - dynamodb:DescribeTable
+                Resource:
+                  - !GetAtt UsersTable.Arn
+                  - !GetAtt WorkoutsTable.Arn
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:ListBucket
+                Resource:
+                  - !GetAtt AppBucket.Arn
+                  - !Sub '${AppBucket.Arn}/*'
+              - Effect: Allow
+                Action:
+                  - cloudwatch:GetMetricStatistics
+                  - cloudwatch:ListMetrics
+                  - logs:GetLogEvents
+                  - logs:DescribeLogGroups
+                  - logs:DescribeLogStreams
+                Resource: '*'
+
+  # IAM admin user
+  AdminUser:
+    Type: AWS::IAM::User
+    Properties:
+      UserName: fitlog-admin
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AdministratorAccess
+
+  # ══════════════════════════════════════════════
+  # ALB
+  # ══════════════════════════════════════════════
+
+  ApplicationLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: fitlog-alb
+      Subnets:
+        - !Ref PublicSubnet1
+        - !Ref PublicSubnet2
+      SecurityGroups:
+        - !Ref ALBSecurityGroup
+      Tags: [{Key: App, Value: fitlog}]
+
+  ALBTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: fitlog-tg
+      VpcId: !Ref FitLogVPC
+      Port: 5000
+      Protocol: HTTP
+      HealthCheckPath: /api/health
+      HealthCheckIntervalSeconds: 30
+      HealthCheckTimeoutSeconds: 10
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      TargetType: instance
+
+  ALBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref ApplicationLoadBalancer
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref ALBTargetGroup
+
+  # ══════════════════════════════════════════════
+  # EC2 Auto Scaling
+  # ══════════════════════════════════════════════
+
+  EC2LaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: fitlog-lt
+      LaunchTemplateData:
+        ImageId: ami-0c02fb55956c7d316   # Amazon Linux 2023 us-east-1 (update per region)
+        InstanceType: t2.micro
+        IamInstanceProfile:
+          Arn: !GetAtt EC2InstanceProfile.Arn
+        SecurityGroupIds:
+          - !Ref EC2SecurityGroup
+        UserData:
+          Fn::Base64: !Sub |
+            #!/bin/bash
+            yum update -y
+            yum install -y python3 python3-pip git
+            mkdir -p /home/ec2-user/logs
+            cd /home/ec2-user
+            git clone ${GitRepo} app
+            cd app
+            pip3 install -r requirements.txt
+            cat > /etc/systemd/system/fitlog.service << EOF
+            [Unit]
+            Description=FitLog Flask App
+            After=network.target
+            [Service]
+            User=ec2-user
+            WorkingDirectory=/home/ec2-user/app
+            Environment="SECRET_KEY=${SecretKey}"
+            Environment="ANTHROPIC_API_KEY=${AnthropicApiKey}"
+            Environment="MAIL_EMAIL=${MailEmail}"
+            Environment="MAIL_PASSWORD=${MailPassword}"
+            Environment="AWS_REGION=${AWS::Region}"
+            ExecStart=/usr/bin/python3 app.py
+            Restart=always
+            StandardOutput=journal
+            StandardError=journal
+            [Install]
+            WantedBy=multi-user.target
+            EOF
+            systemctl daemon-reload
+            systemctl enable fitlog
+            systemctl start fitlog
+
+  AutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    DependsOn: NATGateway
+    Properties:
+      AutoScalingGroupName: fitlog-asg
+      MinSize: '1'
+      MaxSize: '3'
+      DesiredCapacity: '1'
+      LaunchTemplate:
+        LaunchTemplateId: !Ref EC2LaunchTemplate
+        Version: !GetAtt EC2LaunchTemplate.LatestVersionNumber
+      VPCZoneIdentifier:
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+      TargetGroupARNs:
+        - !Ref ALBTargetGroup
+      HealthCheckType: ELB
+      HealthCheckGracePeriod: 180
+      Tags:
+        - Key: Name
+          Value: fitlog-ec2
+          PropagateAtLaunch: true
+
+  CPUScaleUpPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AutoScalingGroupName: !Ref AutoScalingGroup
+      PolicyType: TargetTrackingScaling
+      TargetTrackingConfiguration:
+        PredefinedMetricSpecification:
+          PredefinedMetricType: ASGAverageCPUUtilization
+        TargetValue: 70.0
+
+  # ══════════════════════════════════════════════
+  # CloudWatch
+  # ══════════════════════════════════════════════
+
+  AppLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /fitlog/app
+      RetentionInDays: 30
+
+  CPUAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: fitlog-cpu-high
+      AlarmDescription: EC2 CPU utilization exceeds 80%
+      MetricName: CPUUtilization
+      Namespace: AWS/EC2
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 80
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: AutoScalingGroupName
+          Value: !Ref AutoScalingGroup
+
+  UnhealthyHostAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: fitlog-unhealthy-hosts
+      AlarmDescription: One or more unhealthy hosts in target group
+      MetricName: UnHealthyHostCount
+      Namespace: AWS/ApplicationELB
+      Statistic: Average
+      Period: 60
+      EvaluationPeriods: 2
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: TargetGroup
+          Value: !GetAtt ALBTargetGroup.TargetGroupFullName
+        - Name: LoadBalancer
+          Value: !GetAtt ApplicationLoadBalancer.LoadBalancerFullName
+
+  # ══════════════════════════════════════════════
+  # Lambda + EventBridge — nightly DynamoDB backup
+  # ══════════════════════════════════════════════
+
+  BackupLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: fitlog-backup-lambda-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: FitLogBackupPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:Scan
+                  - dynamodb:DescribeTable
+                Resource:
+                  - !GetAtt UsersTable.Arn
+                  - !GetAtt WorkoutsTable.Arn
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                Resource: !Sub '${AppBucket.Arn}/backups/*'
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: 'arn:aws:logs:*:*:*'
+
+  BackupLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: fitlog-nightly-backup
+      Runtime: python3.11
+      Handler: index.handler
+      Role: !GetAtt BackupLambdaRole.Arn
+      Timeout: 300
+      Environment:
+        Variables:
+          BUCKET_NAME: !Ref AppBucket
+          USERS_TABLE: !Ref UsersTable
+          WORKOUTS_TABLE: !Ref WorkoutsTable
+      Code:
+        ZipFile: |
+          import json, boto3, os
+          from datetime import datetime
+          from decimal import Decimal
+
+          class DecEncoder(json.JSONEncoder):
+              def default(self, o):
+                  if isinstance(o, Decimal): return float(o)
+                  return super().default(o)
+
+          def handler(event, context):
+              db = boto3.resource('dynamodb')
+              s3 = boto3.client('s3')
+              bucket = os.environ['BUCKET_NAME']
+              date_str = datetime.utcnow().strftime('%Y-%m-%d')
+              for tname in [os.environ['USERS_TABLE'], os.environ['WORKOUTS_TABLE']]:
+                  table = db.Table(tname)
+                  items = []
+                  resp = table.scan()
+                  items.extend(resp['Items'])
+                  while 'LastEvaluatedKey' in resp:
+                      resp = table.scan(ExclusiveStartKey=resp['LastEvaluatedKey'])
+                      items.extend(resp['Items'])
+                  s3.put_object(
+                      Bucket=bucket,
+                      Key=f'backups/{date_str}/{tname}.json',
+                      Body=json.dumps(items, cls=DecEncoder).encode()
+                  )
+              return {'statusCode': 200, 'body': 'Backup complete'}
+
+  BackupSchedule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: fitlog-nightly-backup-rule
+      Description: Trigger DynamoDB backup Lambda at midnight UTC
+      ScheduleExpression: cron(0 0 * * ? *)
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt BackupLambda.Arn
+          Id: FitLogBackupLambda
+
+  BackupLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref BackupLambda
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt BackupSchedule.Arn
+
+  # ══════════════════════════════════════════════
+  # CloudTrail
+  # ══════════════════════════════════════════════
+
+  CloudTrailBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'fitlog-cloudtrail-${AWS::AccountId}-${AWS::Region}'
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  CloudTrailBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref CloudTrailBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: cloudtrail.amazonaws.com
+            Action: s3:GetBucketAcl
+            Resource: !GetAtt CloudTrailBucket.Arn
+          - Effect: Allow
+            Principal:
+              Service: cloudtrail.amazonaws.com
+            Action: s3:PutObject
+            Resource: !Sub '${CloudTrailBucket.Arn}/AWSLogs/${AWS::AccountId}/*'
+            Condition:
+              StringEquals:
+                s3:x-amz-acl: bucket-owner-full-control
+
+  FitLogTrail:
+    Type: AWS::CloudTrail::Trail
+    DependsOn: CloudTrailBucketPolicy
+    Properties:
+      TrailName: fitlog-audit-trail
+      S3BucketName: !Ref CloudTrailBucket
+      IsLogging: true
+      IncludeGlobalServiceEvents: true
+      IsMultiRegionTrail: false
+      EnableLogFileValidation: true
+
+Outputs:
+  ALBDNSName:
+    Description: Application Load Balancer DNS name
+    Value: !GetAtt ApplicationLoadBalancer.DNSName
+  AppBucketName:
+    Description: S3 bucket name
+    Value: !Ref AppBucket
+  UsersTableName:
+    Description: DynamoDB users table
+    Value: !Ref UsersTable
+  WorkoutsTableName:
+    Description: DynamoDB workouts table
+    Value: !Ref WorkoutsTable
