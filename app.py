@@ -78,27 +78,12 @@ def clean(obj):
 
 def get_user_by_email(email):
     try:
-        r = users_table().query(
-            IndexName='email-index',
-            KeyConditionExpression=Key('email').eq(email)
-        )
-        items = r.get('Items', [])
-        if items:
-            logger.info(f'get_user_by_email: found via GSI for {email}')
-            return clean(items[0])
-        return None
+        r = users_table().get_item(Key={'email': email})
+        item = r.get('Item')
+        return clean(item) if item else None
     except Exception as e:
-        # GSI may not exist on this table yet — fall back to full scan
-        logger.warning(f'get_user_by_email GSI query failed ({e}), falling back to scan')
-        try:
-            r = users_table().scan(FilterExpression=Attr('email').eq(email))
-            items = r.get('Items', [])
-            if items:
-                logger.info(f'get_user_by_email: found via scan for {email}')
-            return clean(items[0]) if items else None
-        except Exception as e2:
-            logger.error(f'get_user_by_email scan also failed: {e2}')
-            return None
+        logger.error(f'get_user_by_email failed: {e}')
+        return None
 
 
 def get_user_by_username(username):
@@ -122,9 +107,13 @@ def get_user_by_username(username):
 
 
 def get_user_by_id(user_id):
-    r = users_table().get_item(Key={'user_id': str(user_id)})
-    item = r.get('Item')
-    return clean(item) if item else None
+    try:
+        r = users_table().scan(FilterExpression=Attr('user_id').eq(str(user_id)))
+        items = r.get('Items', [])
+        return clean(items[0]) if items else None
+    except Exception as e:
+        logger.error(f'get_user_by_id failed: {e}')
+        return None
 
 
 # ── Validators ────────────────────────────────────────────────────────────────
@@ -193,20 +182,20 @@ def require_admin(f):
 def init_db():
     db = get_dynamodb()
 
-    # fitlog-users
+    # fitlog-users  (partition key: email)
     try:
         db.create_table(
             TableName='fitlog-users',
-            KeySchema=[{'AttributeName': 'user_id', 'KeyType': 'HASH'}],
+            KeySchema=[{'AttributeName': 'email', 'KeyType': 'HASH'}],
             AttributeDefinitions=[
-                {'AttributeName': 'user_id', 'AttributeType': 'S'},
                 {'AttributeName': 'email', 'AttributeType': 'S'},
+                {'AttributeName': 'user_id', 'AttributeType': 'S'},
                 {'AttributeName': 'username', 'AttributeType': 'S'},
             ],
             GlobalSecondaryIndexes=[
                 {
-                    'IndexName': 'email-index',
-                    'KeySchema': [{'AttributeName': 'email', 'KeyType': 'HASH'}],
+                    'IndexName': 'user_id-index',
+                    'KeySchema': [{'AttributeName': 'user_id', 'KeyType': 'HASH'}],
                     'Projection': {'ProjectionType': 'ALL'},
                 },
                 {
@@ -358,6 +347,7 @@ def register():
         'unit_preference': 'imperial',
     })
     session['user_id'] = user_id
+    session['email'] = email
     session['username'] = username
     session['is_admin'] = False
     logger.info(json.dumps({'event': 'register', 'email': email}))
@@ -387,7 +377,7 @@ def login():
         code = ''.join(random.choices(string.digits, k=6))
         expires = (datetime.utcnow() + timedelta(minutes=10)).isoformat()
         users_table().update_item(
-            Key={'user_id': str(user['user_id'])},
+            Key={'email': user['email']},
             UpdateExpression='SET #c = :code, #e = :exp',
             ExpressionAttributeNames={'#c': '2fa_code', '#e': '2fa_expires'},
             ExpressionAttributeValues={':code': code, ':exp': expires},
@@ -397,6 +387,7 @@ def login():
         return jsonify({'requires_2fa': True})
 
     session['user_id'] = user['user_id']
+    session['email'] = user['email']
     session['username'] = user['username']
     session['is_admin'] = user.get('is_admin', False)
     logger.info(json.dumps({'event': 'login', 'email': email}))
@@ -428,12 +419,13 @@ def verify_2fa():
         return jsonify({'error': 'Invalid verification code.'}), 401
 
     users_table().update_item(
-        Key={'user_id': user['user_id']},
+        Key={'email': user['email']},
         UpdateExpression='REMOVE #c, #e',
         ExpressionAttributeNames={'#c': '2fa_code', '#e': '2fa_expires'},
     )
     session.pop('pending_2fa_user_id', None)
     session['user_id'] = user['user_id']
+    session['email'] = user['email']
     session['username'] = user['username']
     session['is_admin'] = user.get('is_admin', False)
     return jsonify({'success': True, 'user': {
@@ -445,32 +437,30 @@ def verify_2fa():
 @app.route('/api/2fa/enroll', methods=['POST'])
 @require_auth
 def enroll_2fa():
-    uid = str(session['user_id'])
-    print(f'DEBUG 2FA_ENROLL session: {dict(session)}')
-    print(f'DEBUG 2FA_ENROLL user_id type={type(uid).__name__} value={uid!r}')
-    logger.info(f'2FA_ENROLL: enabling 2FA for user_id={uid}')
+    user_email = session['email']
+    logger.info(f'2FA_ENROLL: enabling 2FA for email={user_email}')
     users_table().update_item(
-        Key={'user_id': uid},
+        Key={'email': user_email},
         UpdateExpression='SET #en = :t',
         ExpressionAttributeNames={'#en': '2fa_enabled'},
         ExpressionAttributeValues={':t': True},
     )
-    logger.info(f'2FA_ENROLL: success for user_id={uid}')
+    logger.info(f'2FA_ENROLL: success for email={user_email}')
     return jsonify({'success': True})
 
 
 @app.route('/api/2fa/disable', methods=['POST'])
 @require_auth
 def disable_2fa():
-    uid = str(session['user_id'])
-    logger.info(f'2FA_DISABLE: disabling 2FA for user_id={uid}')
+    user_email = session['email']
+    logger.info(f'2FA_DISABLE: disabling 2FA for email={user_email}')
     users_table().update_item(
-        Key={'user_id': uid},
-        UpdateExpression='SET #en = :f',
-        ExpressionAttributeNames={'#en': '2fa_enabled'},
+        Key={'email': user_email},
+        UpdateExpression='SET #en = :f REMOVE #c, #e',
+        ExpressionAttributeNames={'#en': '2fa_enabled', '#c': '2fa_code', '#e': '2fa_expires'},
         ExpressionAttributeValues={':f': False},
     )
-    logger.info(f'2FA_DISABLE: success for user_id={uid}')
+    logger.info(f'2FA_DISABLE: success for email={user_email}')
     return jsonify({'success': True})
 
 
@@ -510,23 +500,21 @@ def logout():
 def update_username():
     data = request.get_json() or {}
     new_u = data.get('username', '').strip()
-    uid = str(session['user_id'])
-    print(f'DEBUG UPDATE_USERNAME session: {dict(session)}')
-    print(f'DEBUG UPDATE_USERNAME user_id type={type(uid).__name__} value={uid!r}')
-    logger.info(f'UPDATE_USERNAME: user_id={uid}')
+    user_email = session['email']
+    logger.info(f'UPDATE_USERNAME: email={user_email}')
     if not valid_username(new_u):
         return jsonify({'error': 'Username must be 3-30 chars (letters, numbers, _ . -)'}), 400
     existing = get_user_by_username(new_u)
     if existing and existing['user_id'] != session['user_id']:
         return jsonify({'error': 'That username is already taken.'}), 409
     users_table().update_item(
-        Key={'user_id': uid},
+        Key={'email': user_email},
         UpdateExpression='SET #un = :u',
         ExpressionAttributeNames={'#un': 'username'},
         ExpressionAttributeValues={':u': new_u},
     )
     session['username'] = new_u
-    logger.info(f'UPDATE_USERNAME: success for user_id={uid}')
+    logger.info(f'UPDATE_USERNAME: success for email={user_email}')
     return jsonify({'success': True})
 
 
@@ -535,22 +523,24 @@ def update_username():
 def update_email():
     data = request.get_json() or {}
     new_e = data.get('email', '').strip().lower()
-    uid = str(session['user_id'])
-    print(f'DEBUG UPDATE_EMAIL session: {dict(session)}')
-    print(f'DEBUG UPDATE_EMAIL user_id type={type(uid).__name__} value={uid!r}')
-    logger.info(f'UPDATE_EMAIL: user_id={uid}')
+    old_email = session['email']
+    logger.info(f'UPDATE_EMAIL: {old_email} -> {new_e}')
     if not valid_email(new_e):
         return jsonify({'error': 'Please enter a valid email address.'}), 400
-    existing = get_user_by_email(new_e)
-    if existing and existing['user_id'] != session['user_id']:
+    if new_e == old_email:
+        return jsonify({'error': 'New email is the same as your current email.'}), 400
+    if get_user_by_email(new_e):
         return jsonify({'error': 'That email is already in use.'}), 409
-    users_table().update_item(
-        Key={'user_id': uid},
-        UpdateExpression='SET #em = :e',
-        ExpressionAttributeNames={'#em': 'email'},
-        ExpressionAttributeValues={':e': new_e},
-    )
-    logger.info(f'UPDATE_EMAIL: success for user_id={uid}')
+    # email is the partition key — must delete the old record and create a new one
+    raw = users_table().get_item(Key={'email': old_email}).get('Item')
+    if not raw:
+        return jsonify({'error': 'User not found.'}), 404
+    new_item = {k: v for k, v in raw.items() if v is not None}
+    new_item['email'] = new_e
+    users_table().put_item(Item=new_item)
+    users_table().delete_item(Key={'email': old_email})
+    session['email'] = new_e
+    logger.info(f'UPDATE_EMAIL: success')
     return jsonify({'success': True})
 
 
@@ -558,10 +548,8 @@ def update_email():
 @require_auth
 def update_metrics():
     data = request.get_json() or {}
-    uid = str(session['user_id'])
-    print(f'DEBUG UPDATE_METRICS session: {dict(session)}')
-    print(f'DEBUG UPDATE_METRICS user_id type={type(uid).__name__} value={uid!r}')
-    logger.info(f'UPDATE_METRICS: user_id={uid} payload_keys={list(data.keys())}')
+    user_email = session['email']
+    logger.info(f'UPDATE_METRICS: email={user_email} payload_keys={list(data.keys())}')
     parts, vals, names = [], {}, {}
     if 'age' in data and data['age'] is not None:
         parts.append('#age = :age')
@@ -587,14 +575,14 @@ def update_metrics():
         names['#unit'] = 'unit_preference'
     if not parts:
         return jsonify({'error': 'Nothing to update.'}), 400
-    logger.info(f'UPDATE_METRICS: updating fields={list(names.values())} for user_id={uid}')
+    logger.info(f'UPDATE_METRICS: updating fields={list(names.values())} for email={user_email}')
     users_table().update_item(
-        Key={'user_id': uid},
+        Key={'email': user_email},
         UpdateExpression='SET ' + ', '.join(parts),
         ExpressionAttributeNames=names,
         ExpressionAttributeValues=vals,
     )
-    logger.info(f'UPDATE_METRICS: success for user_id={uid}')
+    logger.info(f'UPDATE_METRICS: success for email={user_email}')
     return jsonify({'success': True})
 
 
@@ -799,7 +787,7 @@ def admin_toggle_2fa(user_id):
         return jsonify({'error': 'User not found.'}), 404
     new_val = not user.get('2fa_enabled', False)
     users_table().update_item(
-        Key={'user_id': str(user_id)},
+        Key={'email': user['email']},
         UpdateExpression='SET #en = :v',
         ExpressionAttributeNames={'#en': '2fa_enabled'},
         ExpressionAttributeValues={':v': new_val},
@@ -814,14 +802,23 @@ def admin_update_email(user_id):
     new_e = data.get('email', '').strip().lower()
     if not valid_email(new_e):
         return jsonify({'error': 'Invalid email address.'}), 400
+    user = get_user_by_id(user_id)
+    if not user:
+        return jsonify({'error': 'User not found.'}), 404
+    old_email = user['email']
+    if new_e == old_email:
+        return jsonify({'success': True})
     existing = get_user_by_email(new_e)
-    if existing and existing['user_id'] != user_id:
+    if existing:
         return jsonify({'error': 'Email already in use.'}), 409
-    users_table().update_item(
-        Key={'user_id': str(user_id)},
-        UpdateExpression='SET email = :e',
-        ExpressionAttributeValues={':e': new_e},
-    )
+    # email is the partition key — must delete old record and create a new one
+    raw = users_table().get_item(Key={'email': old_email}).get('Item')
+    if not raw:
+        return jsonify({'error': 'User not found.'}), 404
+    new_item = {k: v for k, v in raw.items() if v is not None}
+    new_item['email'] = new_e
+    users_table().put_item(Item=new_item)
+    users_table().delete_item(Key={'email': old_email})
     return jsonify({'success': True})
 
 
@@ -832,12 +829,16 @@ def admin_update_username(user_id):
     new_u = data.get('username', '').strip()
     if not valid_username(new_u):
         return jsonify({'error': 'Invalid username.'}), 400
+    user = get_user_by_id(user_id)
+    if not user:
+        return jsonify({'error': 'User not found.'}), 404
     existing = get_user_by_username(new_u)
     if existing and existing['user_id'] != user_id:
         return jsonify({'error': 'Username already taken.'}), 409
     users_table().update_item(
-        Key={'user_id': str(user_id)},
-        UpdateExpression='SET username = :u',
+        Key={'email': user['email']},
+        UpdateExpression='SET #un = :u',
+        ExpressionAttributeNames={'#un': 'username'},
         ExpressionAttributeValues={':u': new_u},
     )
     return jsonify({'success': True})
@@ -847,6 +848,9 @@ def admin_update_username(user_id):
 @require_admin
 def admin_update_metrics(user_id):
     data = request.get_json() or {}
+    user = get_user_by_id(user_id)
+    if not user:
+        return jsonify({'error': 'User not found.'}), 404
     parts, vals = [], {}
     for f in ('age', 'weight', 'height', 'gender', 'unit_preference'):
         if f in data:
@@ -855,7 +859,7 @@ def admin_update_metrics(user_id):
     if not parts:
         return jsonify({'error': 'Nothing to update.'}), 400
     users_table().update_item(
-        Key={'user_id': str(user_id)},
+        Key={'email': user['email']},
         UpdateExpression='SET ' + ', '.join(parts),
         ExpressionAttributeValues=vals,
     )
