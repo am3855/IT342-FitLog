@@ -5,9 +5,18 @@ import boto3
 import uuid
 import os
 import re
+import logging
+import json
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'fitlog-dev-secret-key')
+
+# Logging setup
+logging.basicConfig(
+    filename='/home/ec2-user/logs/app.log',
+    level=logging.INFO,
+    format='%(asctime)s %(levelname)s %(message)s'
+)
 
 # Session configuration for security
 app.config['SESSION_COOKIE_HTTPONLY'] = True
@@ -40,7 +49,6 @@ def validate_email(email):
     """Basic email validation"""
     if not email or len(email) > 254:
         return False
-    # Simple regex for email validation
     return bool(re.match(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', email))
 
 
@@ -78,13 +86,13 @@ def register():
 
     if not first_name or not last_name or not email or not password:
         return jsonify({'error': 'All fields are required.'}), 400
-    
+
     if not validate_name(first_name) or not validate_name(last_name):
         return jsonify({'error': 'Names can only contain letters, spaces, hyphens, and apostrophes.'}), 400
-    
+
     if not validate_email(email):
         return jsonify({'error': 'Please enter a valid email address.'}), 400
-    
+
     if len(password) < 8:
         return jsonify({'error': 'Password must be at least 8 characters.'}), 400
 
@@ -100,9 +108,12 @@ def register():
             },
             ConditionExpression='attribute_not_exists(email)'
         )
+        logging.info(json.dumps({'event': 'user_registered', 'email': email}))
     except ClientError as e:
         if e.response['Error']['Code'] == 'ConditionalCheckFailedException':
+            logging.warning(json.dumps({'event': 'register_failed', 'reason': 'email_exists', 'email': email}))
             return jsonify({'error': 'An account with that email already exists.'}), 409
+        logging.error(json.dumps({'event': 'register_error', 'email': email, 'error': str(e)}))
         raise
 
     session['email'] = email
@@ -124,7 +135,7 @@ def login():
 
     if not email or not password:
         return jsonify({'error': 'Please enter your email and password.'}), 400
-    
+
     if not validate_email(email):
         return jsonify({'error': 'Please enter a valid email address.'}), 400
 
@@ -133,11 +144,13 @@ def login():
     user = response.get('Item')
 
     if user is None or not check_password_hash(user['password_hash'], password):
+        logging.warning(json.dumps({'event': 'login_failed', 'email': email}))
         return jsonify({'error': 'Invalid email or password.'}), 401
 
     session['email'] = user['email']
     session['first_name'] = user['first_name']
     session['last_name'] = user['last_name']
+    logging.info(json.dumps({'event': 'user_login', 'email': email}))
 
     return jsonify({'success': True, 'user': {
         'first_name': user['first_name'],
@@ -160,6 +173,7 @@ def me():
 @app.route('/api/logout', methods=['POST'])
 def logout():
     session.clear()
+    logging.info(json.dumps({'event': 'user_logout'}))
     return jsonify({'success': True})
 
 
@@ -173,4 +187,4 @@ def add_security_headers(response):
 
 if __name__ == '__main__':
     init_db()
-    app.run(debug=True)
+    app.run(host="0.0.0.0", port=5000, debug=True)
