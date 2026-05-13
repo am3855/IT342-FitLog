@@ -122,7 +122,7 @@ def get_user_by_username(username):
 
 
 def get_user_by_id(user_id):
-    r = users_table().get_item(Key={'user_id': user_id})
+    r = users_table().get_item(Key={'user_id': str(user_id)})
     item = r.get('Item')
     return clean(item) if item else None
 
@@ -246,6 +246,18 @@ def init_db():
     except ClientError as e:
         if e.response['Error']['Code'] != 'ResourceInUseException':
             raise
+
+    # Log actual table schema so key mismatches are immediately visible in server logs
+    try:
+        client = db.meta.client
+        for tname in ('fitlog-users', 'fitlog-workouts'):
+            desc = client.describe_table(TableName=tname)['Table']
+            ks = [(k['AttributeName'], k['KeyType']) for k in desc['KeySchema']]
+            ad = {a['AttributeName']: a['AttributeType'] for a in desc['AttributeDefinitions']}
+            gsis = [g['IndexName'] for g in desc.get('GlobalSecondaryIndexes', [])]
+            logger.info(f'SCHEMA {tname}: keys={ks} types={ad} gsis={gsis}')
+    except Exception as e:
+        logger.error(f'SCHEMA check failed: {e}')
 
     # Seed admin — use scan without Limit so all items are checked.
     # Limit=N on a DynamoDB scan limits items EVALUATED before filtering, not items matched.
@@ -375,7 +387,7 @@ def login():
         code = ''.join(random.choices(string.digits, k=6))
         expires = (datetime.utcnow() + timedelta(minutes=10)).isoformat()
         users_table().update_item(
-            Key={'user_id': user['user_id']},
+            Key={'user_id': str(user['user_id'])},
             UpdateExpression='SET #c = :code, #e = :exp',
             ExpressionAttributeNames={'#c': '2fa_code', '#e': '2fa_expires'},
             ExpressionAttributeValues={':code': code, ':exp': expires},
@@ -433,28 +445,32 @@ def verify_2fa():
 @app.route('/api/2fa/enroll', methods=['POST'])
 @require_auth
 def enroll_2fa():
-    logger.info(f'2FA_ENROLL: enabling 2FA for user_id={session["user_id"]}')
+    uid = str(session['user_id'])
+    print(f'DEBUG 2FA_ENROLL session: {dict(session)}')
+    print(f'DEBUG 2FA_ENROLL user_id type={type(uid).__name__} value={uid!r}')
+    logger.info(f'2FA_ENROLL: enabling 2FA for user_id={uid}')
     users_table().update_item(
-        Key={'user_id': session['user_id']},
+        Key={'user_id': uid},
         UpdateExpression='SET #en = :t',
         ExpressionAttributeNames={'#en': '2fa_enabled'},
         ExpressionAttributeValues={':t': True},
     )
-    logger.info(f'2FA_ENROLL: success for user_id={session["user_id"]}')
+    logger.info(f'2FA_ENROLL: success for user_id={uid}')
     return jsonify({'success': True})
 
 
 @app.route('/api/2fa/disable', methods=['POST'])
 @require_auth
 def disable_2fa():
-    logger.info(f'2FA_DISABLE: disabling 2FA for user_id={session["user_id"]}')
+    uid = str(session['user_id'])
+    logger.info(f'2FA_DISABLE: disabling 2FA for user_id={uid}')
     users_table().update_item(
-        Key={'user_id': session['user_id']},
+        Key={'user_id': uid},
         UpdateExpression='SET #en = :f',
         ExpressionAttributeNames={'#en': '2fa_enabled'},
         ExpressionAttributeValues={':f': False},
     )
-    logger.info(f'2FA_DISABLE: success for user_id={session["user_id"]}')
+    logger.info(f'2FA_DISABLE: success for user_id={uid}')
     return jsonify({'success': True})
 
 
@@ -500,7 +516,7 @@ def update_username():
     if existing and existing['user_id'] != session['user_id']:
         return jsonify({'error': 'That username is already taken.'}), 409
     users_table().update_item(
-        Key={'user_id': session['user_id']},
+        Key={'user_id': str(session['user_id'])},
         UpdateExpression='SET username = :u',
         ExpressionAttributeValues={':u': new_u},
     )
@@ -519,7 +535,7 @@ def update_email():
     if existing and existing['user_id'] != session['user_id']:
         return jsonify({'error': 'That email is already in use.'}), 409
     users_table().update_item(
-        Key={'user_id': session['user_id']},
+        Key={'user_id': str(session['user_id'])},
         UpdateExpression='SET email = :e',
         ExpressionAttributeValues={':e': new_e},
     )
@@ -530,34 +546,43 @@ def update_email():
 @require_auth
 def update_metrics():
     data = request.get_json() or {}
-    logger.info(f'UPDATE_METRICS: user_id={session["user_id"]} payload_keys={list(data.keys())}')
-    parts, vals = [], {}
-    if 'age' in data:
-        parts.append('age = :age')
+    uid = str(session['user_id'])
+    print(f'DEBUG UPDATE_METRICS session: {dict(session)}')
+    print(f'DEBUG UPDATE_METRICS user_id type={type(uid).__name__} value={uid!r}')
+    logger.info(f'UPDATE_METRICS: user_id={uid} payload_keys={list(data.keys())}')
+    parts, vals, names = [], {}, {}
+    if 'age' in data and data['age'] is not None:
+        parts.append('#age = :age')
         vals[':age'] = to_dec(data['age'])
-    if 'weight' in data:
-        parts.append('weight = :weight')
+        names['#age'] = 'age'
+    if 'weight' in data and data['weight'] is not None:
+        parts.append('#weight = :weight')
         vals[':weight'] = to_dec(data['weight'])
-    if 'height' in data:
-        parts.append('height = :height')
+        names['#weight'] = 'weight'
+    if 'height' in data and data['height'] is not None:
+        parts.append('#height = :height')
         vals[':height'] = to_dec(data['height'])
-    if 'gender' in data:
-        parts.append('gender = :gender')
-        vals[':gender'] = data['gender']
+        names['#height'] = 'height'
+    if 'gender' in data and data['gender']:
+        parts.append('#gender = :gender')
+        vals[':gender'] = str(data['gender'])
+        names['#gender'] = 'gender'
     if 'unit_preference' in data:
         if data['unit_preference'] not in ('imperial', 'metric'):
             return jsonify({'error': 'Invalid unit preference.'}), 400
-        parts.append('unit_preference = :unit_preference')
-        vals[':unit_preference'] = data['unit_preference']
+        parts.append('#unit = :unit')
+        vals[':unit'] = str(data['unit_preference'])
+        names['#unit'] = 'unit_preference'
     if not parts:
         return jsonify({'error': 'Nothing to update.'}), 400
-    logger.info(f'UPDATE_METRICS: updating fields={parts}')
+    logger.info(f'UPDATE_METRICS: updating fields={list(names.values())} for user_id={uid}')
     users_table().update_item(
-        Key={'user_id': session['user_id']},
+        Key={'user_id': uid},
         UpdateExpression='SET ' + ', '.join(parts),
+        ExpressionAttributeNames=names,
         ExpressionAttributeValues=vals,
     )
-    logger.info(f'UPDATE_METRICS: success for user_id={session["user_id"]}')
+    logger.info(f'UPDATE_METRICS: success for user_id={uid}')
     return jsonify({'success': True})
 
 
@@ -762,7 +787,7 @@ def admin_toggle_2fa(user_id):
         return jsonify({'error': 'User not found.'}), 404
     new_val = not user.get('2fa_enabled', False)
     users_table().update_item(
-        Key={'user_id': user_id},
+        Key={'user_id': str(user_id)},
         UpdateExpression='SET #en = :v',
         ExpressionAttributeNames={'#en': '2fa_enabled'},
         ExpressionAttributeValues={':v': new_val},
@@ -781,7 +806,7 @@ def admin_update_email(user_id):
     if existing and existing['user_id'] != user_id:
         return jsonify({'error': 'Email already in use.'}), 409
     users_table().update_item(
-        Key={'user_id': user_id},
+        Key={'user_id': str(user_id)},
         UpdateExpression='SET email = :e',
         ExpressionAttributeValues={':e': new_e},
     )
@@ -799,7 +824,7 @@ def admin_update_username(user_id):
     if existing and existing['user_id'] != user_id:
         return jsonify({'error': 'Username already taken.'}), 409
     users_table().update_item(
-        Key={'user_id': user_id},
+        Key={'user_id': str(user_id)},
         UpdateExpression='SET username = :u',
         ExpressionAttributeValues={':u': new_u},
     )
@@ -818,7 +843,7 @@ def admin_update_metrics(user_id):
     if not parts:
         return jsonify({'error': 'Nothing to update.'}), 400
     users_table().update_item(
-        Key={'user_id': user_id},
+        Key={'user_id': str(user_id)},
         UpdateExpression='SET ' + ', '.join(parts),
         ExpressionAttributeValues=vals,
     )
