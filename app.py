@@ -160,7 +160,7 @@ from functools import wraps
 def require_auth(f):
     @wraps(f)
     def decorated(*args, **kwargs):
-        if 'user_id' not in session:
+        if 'user_id' not in session or 'email' not in session:
             return jsonify({'error': 'Authentication required'}), 401
         return f(*args, **kwargs)
     return decorated
