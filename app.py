@@ -30,7 +30,15 @@ app.config['PERMANENT_SESSION_LIFETIME'] = 3600
 _cors_origins = os.environ.get('CORS_ORIGINS', '*')
 CORS(app, origins=_cors_origins, supports_credentials=True)
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
+# Logging setup
+logging.basicConfig(
+    filename='/home/ec2-user/logs/app.log',
+    level=logging.INFO,
+    format='%(asctime)s %(levelname)s %(message)s'
+)
+for handler in logging.root.handlers:
+    app.logger.addHandler(handler)
+
 logger = logging.getLogger(__name__)
 
 WGER_BASE = 'https://wger.de/api/v2'
@@ -946,3 +954,4 @@ def security_headers(response):
 if __name__ == '__main__':
     init_db()
     app.run(host='0.0.0.0', port=5000, debug=False)
+
